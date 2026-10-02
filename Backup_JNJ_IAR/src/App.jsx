@@ -1,0 +1,574 @@
+import React, { useState, useEffect } from 'react';
+import Header from './components/layout/Header';
+import DiscussionModal from './components/issues/DiscussionModal';
+import IssueModal from './components/issues/IssueModal';
+import WorkflowModal from './components/reporting/WorkflowModal';
+import IssueLogsModal from './components/issues/IssueLogsModal';
+import AuditIssuesView from './views/AuditIssuesView';
+import MyAuditsView from './views/MyAuditsView';
+import AuditReportView from './views/AuditReportView';
+import ExecutiveReportView from './views/ExecutiveReportView';
+import ReportingNewDetailDrawer from './components/reporting/ReportingNewDetailDrawer';
+import CreateIssueDrawerNew from './components/issues/CreateIssueDrawerNew';
+import { getInitialReportingJobs, getEngagementWorkflowState } from './utils/auditWorkflowEngine.js';
+import {
+  PrePlanningView,
+  PlanningView,
+  WrapUpView,
+  DashboardsView
+} from './components/layout/PhaseViews';
+import { MoreVertical, Check, CheckCircle2, X } from 'lucide-react';
+
+export default function App() {
+  const [currentPhase, setCurrentPhase] = useState('reporting');
+  const [reportingJobs, setReportingJobs] = useState(getInitialReportingJobs);
+  const [selectedReportId, setSelectedReportId] = useState("REP-2026-006"); // BiosenseWebster_Catheters_Audit as default
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+
+  // Reporting Module Drawer & Work On Report Studio State: { job, type: 'audit' | 'executive' }
+  const [selectedReportingJobId, setSelectedReportingJobId] = useState(null);
+  const [activeWorkOnReportJob, setActiveWorkOnReportJob] = useState(null);
+
+  // Update an engagement's issues list from AuditReportView or drawers
+  const handleUpdateJobIssues = (jobId, updatedIssues) => {
+    setReportingJobs(prev => prev.map(j => {
+      if (j.id === jobId || j.jobId === jobId || j.reportId === jobId) {
+        const wf = getEngagementWorkflowState({ ...j, issuesList: updatedIssues });
+        const newStatus = j.status === 'Completed' ? 'Completed' : (updatedIssues.length > 0 ? 'In Progress' : 'Not Started');
+        const newSubStatus = j.status === 'Completed' ? 'Executive Report Completed' : (updatedIssues.length > 0 ? 'Audit Report In Progress' : 'Not Started');
+        return {
+          ...j,
+          status: newStatus,
+          subStatus: newSubStatus,
+          workflowStatus: wf.status,
+          currentQueue: wf.queue,
+          currentOwner: wf.ownerText,
+          issuesList: updatedIssues,
+          discussionPoints: {
+            ...j.discussionPoints,
+            count: updatedIssues.length
+          }
+        };
+      }
+      return j;
+    }));
+
+    // Keep activeWorkOnReportJob synchronized in real time
+    setActiveWorkOnReportJob(prev => {
+      if (!prev || (prev.job.id !== jobId && prev.job.jobId !== jobId && prev.job.reportId !== jobId)) return prev;
+      const wf = getEngagementWorkflowState({ ...prev.job, issuesList: updatedIssues });
+      const newStatus = prev.job.status === 'Completed' ? 'Completed' : (updatedIssues.length > 0 ? 'In Progress' : 'Not Started');
+      return {
+        ...prev,
+        job: {
+          ...prev.job,
+          status: newStatus,
+          workflowStatus: wf.status,
+          currentQueue: wf.queue,
+          currentOwner: wf.ownerText,
+          issuesList: updatedIssues,
+          discussionPoints: {
+            ...prev.job.discussionPoints,
+            count: updatedIssues.length
+          }
+        }
+      };
+    });
+  };
+
+  // Global Create Issue Drawer State for Auditor 'Not Started' Jobs
+  const [isCreateIssueDrawerOpen, setIsCreateIssueDrawerOpen] = useState(false);
+  const [createIssueJob, setCreateIssueJob] = useState(null);
+  const [toastMessage, setToastMessage] = useState(null);
+
+  useEffect(() => {
+    if (toastMessage) {
+      const timer = setTimeout(() => setToastMessage(null), 4500);
+      return () => clearTimeout(timer);
+    }
+  }, [toastMessage]);
+
+  const handleOpenCreateIssue = (job) => {
+    setCreateIssueJob(job);
+    setIsCreateIssueDrawerOpen(true);
+  };
+
+  const handleSaveIssueFromDrawer = (savedPoint) => {
+    if (createIssueJob) {
+      // Append to reportingJobs so Audit Report and My Audits immediately reflect the new issue
+      setReportingJobs(prev => prev.map(j => {
+        if (j.id === createIssueJob.id || j.jobId === createIssueJob.jobId || j.reportId === createIssueJob.id || j.fileName === createIssueJob.fileName || j.engagement === createIssueJob.engagement) {
+          const updatedIssues = [
+            ...(j.issuesList || []),
+            savedPoint
+          ];
+          const wf = getEngagementWorkflowState({ ...j, issuesList: updatedIssues });
+          return {
+            ...j,
+            status: j.status === 'Completed' ? 'Completed' : 'In Progress',
+            subStatus: j.status === 'Completed' ? 'Executive Report Completed' : 'Audit Report In Progress',
+            workflowStatus: wf.status,
+            currentQueue: wf.queue,
+            currentOwner: wf.ownerText,
+            issuesList: updatedIssues,
+            discussionPoints: {
+              ...j.discussionPoints,
+              count: updatedIssues.length
+            }
+          };
+        }
+        return j;
+      }));
+    }
+    setIsCreateIssueDrawerOpen(false);
+    setCreateIssueJob(null);
+
+    setToastMessage({
+      title: "Issue Saved Successfully",
+      description: `Issue #${savedPoint.issueId || savedPoint.id} has been saved to the audit queue and synthesized with AI.`
+    });
+  };
+
+  // Application Active User Role: 'auditor' | 'team-coordinator' | 'manager' | 'director' | 'vp' | 'business-head' | 'primary-business-contact'
+  const [userRole, setUserRole] = useState('it-manager');
+
+  // Audit Queue Title Banner Dropdown State
+  const [auditQueueViewMode, setAuditQueueViewMode] = useState('concept1-edge-to-edge');
+  const [isTitleMenuOpen, setIsTitleMenuOpen] = useState(false);
+  const titleMenuRef = React.useRef(null);
+
+  React.useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (titleMenuRef.current && !titleMenuRef.current.contains(event.target)) {
+        setIsTitleMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const [activeView, setActiveView] = useState('queue'); // 'queue' or 'discussion-points'
+  const [discussionFuncFilter, setDiscussionFuncFilter] = useState('All');
+
+  // Modals state
+  const [discussionModal, setDiscussionModal] = useState({
+    isOpen: false,
+    type: 'IT',
+    report: null
+  });
+
+  const [issueModal, setIssueModal] = useState({
+    isOpen: false,
+    report: null
+  });
+
+  const [workflowModal, setWorkflowModal] = useState({
+    isOpen: false,
+    title: '',
+    workflows: []
+  });
+
+  const [historyModal, setHistoryModal] = useState({
+    isOpen: false,
+    report: null
+  });
+
+  const activeReportingNewJob = reportingJobs.find(j => j.id === selectedReportId || j.id === selectedReportingJobId || j.reportId === selectedReportId) || null;
+  const selectedReport = activeReportingNewJob || (reportingJobs.find(r => r.id === selectedReportId) || reportingJobs.find(r => r.id === "REP-2026-006") || reportingJobs[0]);
+
+  const selectedReportingJob = reportingJobs.find(j => j.id === selectedReportingJobId) || null;
+
+  const handleSelectReport = (reportId) => {
+    setSelectedReportId(reportId);
+    setIsDrawerOpen(true);
+  };
+
+  const handleCloseDrawer = () => {
+    setIsDrawerOpen(false);
+    setSelectedReportId(null);
+  };
+
+  const handleSelectReportingJob = (jobId) => {
+    setSelectedReportingJobId(selectedReportingJobId === jobId ? null : jobId);
+  };
+
+  const handleCloseReportingDrawer = () => {
+    setSelectedReportingJobId(null);
+  };
+
+  // Open Full-Screen Discussion Points View
+  const handleOpenDiscussionPointsView = (funcType = 'All') => {
+    setDiscussionFuncFilter(funcType);
+    setActiveView('discussion-points');
+  };
+
+  const handleBackToQueue = () => {
+    setActiveView('queue');
+  };
+
+  // Discussion Save Handler
+  const handleSaveDiscussion = (type, items) => {
+    setReportingJobs(prev => prev.map(r => {
+      if (selectedReport && r.id === selectedReport.id) {
+        if (type === 'IT') {
+          return {
+            ...r,
+            itDiscussion: {
+              ...r.itDiscussion,
+              items: items,
+              status: items.length > 0 ? "In Progress" : "Not started"
+            }
+          };
+        } else {
+          return {
+            ...r,
+            finOpsDiscussion: {
+              ...r.finOpsDiscussion,
+              items: items,
+              status: items.length > 0 ? "In Progress" : "Not started"
+            }
+          };
+        }
+      }
+      return r;
+    }));
+  };
+
+  // Issue Save Handler
+  const handleSaveIssues = (reportId, newIssues) => {
+    setReportingJobs(prev => prev.map(r => {
+      if (r.id === reportId) {
+        return {
+          ...r,
+          issuesList: newIssues,
+          issueIndicator: {
+            count: newIssues.length,
+            critical: newIssues.filter(i => i.severity === 'Critical').length,
+            minor: newIssues.filter(i => i.severity === 'Minor').length,
+            issues: newIssues
+          }
+        };
+      }
+      return r;
+    }));
+  };
+
+  const handleOpenITModal = (reportObj) => {
+    handleOpenDiscussionPointsView('IT');
+  };
+
+  const handleOpenFinOpsModal = (reportObj) => {
+    handleOpenDiscussionPointsView('FinOps');
+  };
+
+  const handleOpenIssueModal = (reportObj) => {
+    setIssueModal({
+      isOpen: true,
+      report: reportObj || selectedReport
+    });
+  };
+
+  const handleOpenWorkflowModal = ({ title, workflows, job }) => {
+    setWorkflowModal({
+      isOpen: true,
+      title: title || "Workflow Stages",
+      job: job || null,
+      workflows: workflows || []
+    });
+  };
+
+  const handleOpenHistoryModal = (reportObj) => {
+    setHistoryModal({
+      isOpen: true,
+      report: reportObj || selectedReport
+    });
+  };
+
+  const isCurrentDrawerOpen = (currentPhase === 'reporting' && !!selectedReportingJobId);
+
+  return (
+    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', backgroundColor: 'var(--slate-50)', overflow: 'hidden' }}>
+
+      {/* 1. Top Application Header (54px) */}
+      <Header
+        currentPhase={currentPhase}
+        onPhaseChange={(phase) => {
+          setCurrentPhase(phase);
+          setActiveView('queue');
+          setActiveWorkOnReportJob(null);
+        }}
+        userRole={userRole}
+        onRoleChange={setUserRole}
+      />
+
+      {/* 2. Main Content View Switcher */}
+      {activeWorkOnReportJob ? (
+        /* INTERACTIVE STUDIOS FOR AUDIT REPORT VS EXECUTIVE SUMMARY REPORT */
+        activeWorkOnReportJob.type === 'executive' ? (
+          <ExecutiveReportView
+            key={`exec-${activeWorkOnReportJob.job.id}-${userRole}`}
+            job={reportingJobs.find(j => j.id === activeWorkOnReportJob.job.id) || activeWorkOnReportJob.job}
+            onClose={() => setActiveWorkOnReportJob(null)}
+            userRole={userRole}
+            onSwitchToAuditReport={() => setActiveWorkOnReportJob(prev => ({ ...prev, type: 'audit' }))}
+          />
+        ) : (
+          <AuditReportView
+            job={reportingJobs.find(j => j.id === activeWorkOnReportJob.job.id) || activeWorkOnReportJob.job}
+            onClose={() => setActiveWorkOnReportJob(null)}
+            onUpdateIssues={(updatedIssues) => handleUpdateJobIssues(activeWorkOnReportJob.job.id, updatedIssues)}
+            userRole={userRole}
+            onSwitchToExecutiveReport={() => setActiveWorkOnReportJob(prev => ({ ...prev, type: 'executive' }))}
+          />
+        )
+      ) : activeView === 'discussion-points' ? (
+        <AuditIssuesView
+          report={selectedReport}
+          initialFunction={discussionFuncFilter}
+          onBackToQueue={handleBackToQueue}
+          onOpenHistoryModal={handleOpenHistoryModal}
+        />
+      ) : (
+        /* QUEUE TABLE & DRAWER WORKSPACE */
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+          {/* Title Section (Hidden for now - preserved per request) */}
+          {/* {currentPhase === 'reporting' && activeView === 'queue' && (
+            <div className="job-queue-title-banner" style={{ position: 'relative' }}>
+              <h2>My Audits</h2>
+            </div>
+          )} */}
+
+          <div className={`workspace-split-container ${isCurrentDrawerOpen ? 'drawer-is-open' : ''}`}>
+
+            {/* Left Content Area */}
+            <main className="main-container">
+              {currentPhase === 'pre-planning' ? (
+                <PrePlanningView />
+              ) : (currentPhase === 'planning' || currentPhase === 'fieldwork') ? (
+                <PlanningView />
+              ) : currentPhase === 'reporting' ? (
+                <MyAuditsView
+                  jobs={reportingJobs}
+                  onUpdateJobs={setReportingJobs}
+                  selectedJobId={selectedReportingJobId}
+                  onSelectJob={handleSelectReportingJob}
+                  viewMode={auditQueueViewMode}
+                  userRole={userRole}
+                  onOpenDiscussionPoints={(job) => {
+                    const matchingReport = reportingJobs.find(r =>
+                      r.id === job.id ||
+                      r.fileName === job.fileName ||
+                      r.engagement === job.engagement ||
+                      (r.fileName && job.fileName && r.fileName.toLowerCase() === job.fileName.toLowerCase())
+                    ) || {
+                      id: job.id,
+                      reportId: job.reportId || job.id,
+                      fileName: job.fileName || job.engagement,
+                      engagement: job.engagement || job.fileName,
+                      status: job.status
+                    };
+
+                    setSelectedReportId(matchingReport.id);
+                    setDiscussionFuncFilter('All');
+                    setActiveView('discussion-points');
+                  }}
+                  onOpenCreateIssue={handleOpenCreateIssue}
+                  onWorkOnReport={(job, type = 'audit') => setActiveWorkOnReportJob({ job, type })}
+                  onOpenHistory={(job) => handleOpenHistoryModal({ id: job.id, header: job.engagement })}
+                />
+              ) : currentPhase === 'wrap-up' ? (
+                <WrapUpView />
+              ) : currentPhase === 'dashboards' ? (
+                <DashboardsView />
+              ) : null}
+            </main>
+
+            {/* Right Reporting Detail Drawer Panel (For Reporting phase) */}
+            {currentPhase === 'reporting' && selectedReportingJob && (
+              <ReportingNewDetailDrawer
+                isOpen={!!selectedReportingJob}
+                job={reportingJobs.find(j => j.id === selectedReportingJob.id) || selectedReportingJob}
+                userRole={userRole}
+                onClose={handleCloseReportingDrawer}
+                onOpenDiscussionPoints={(job) => {
+                  const matchingReport = reportingJobs.find(r =>
+                    r.id === job.id ||
+                    r.fileName === job.fileName ||
+                    r.engagement === job.engagement ||
+                    (r.fileName && job.fileName && r.fileName.toLowerCase() === job.fileName.toLowerCase())
+                  ) || {
+                    id: job.id,
+                    reportId: job.reportId || job.id,
+                    fileName: job.fileName || job.engagement,
+                    engagement: job.engagement || job.fileName,
+                    status: job.status
+                  };
+
+                  setSelectedReportId(matchingReport.id);
+                  setDiscussionFuncFilter('All');
+                  setActiveView('discussion-points');
+                }}
+                onOpenCreateIssue={handleOpenCreateIssue}
+                onOpenWorkflow={(job) => handleOpenWorkflowModal({
+                  title: `${job.id} — Workflow Stages`,
+                  job,
+                  workflows: [
+                    { groupTitle: "Audit Report Workflow", status: job.auditReport?.validationStatus, steps: [] },
+                    { groupTitle: "Executive Report Workflow", status: job.executiveSummaryReport?.validationStatus, steps: [] }
+                  ]
+                })}
+                onOpenHistory={(job) => handleOpenHistoryModal({ id: job.id, header: job.engagement })}
+              />
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Global Create Issue Drawer Pop-over */}
+      <CreateIssueDrawerNew
+        isOpen={isCreateIssueDrawerOpen}
+        onClose={() => {
+          setIsCreateIssueDrawerOpen(false);
+          setCreateIssueJob(null);
+        }}
+        onSaveDiscussionPoint={handleSaveIssueFromDrawer}
+        defaultFunction={createIssueJob?.tech || 'IT'}
+        jobId={createIssueJob?.id || createIssueJob?.jobId}
+        engagementId={createIssueJob?.id}
+        job={createIssueJob}
+      />
+
+      {/* Embedded CSS Keyframes for Toast Animations */}
+      <style>{`
+        @keyframes slideUpToast {
+          from { opacity: 0; transform: translateY(24px) scale(0.94); }
+          to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        @keyframes toastProgress {
+          from { width: 100%; }
+          to { width: 0%; }
+        }
+        @keyframes toastPulse {
+          0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
+          70% { transform: scale(1.05); box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
+          100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+        }
+      `}</style>
+
+      {/* Premium Enterprise SaaS Toast Notification */}
+      {toastMessage && (
+        <div
+          style={{
+            position: 'fixed',
+            bottom: '28px',
+            right: '28px',
+            zIndex: 9999,
+            display: 'flex',
+            flexDirection: 'column',
+            minWidth: '380px',
+            maxWidth: '450px',
+            backgroundColor: '#0F172A',
+            color: '#ffffff',
+            borderRadius: '12px',
+            border: '1px solid #10B981',
+            boxShadow: '0 14px 36px rgba(15, 23, 42, 0.45), 0 0 24px rgba(16, 185, 129, 0.25)',
+            animation: 'slideUpToast 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
+            overflow: 'hidden'
+          }}
+        >
+          <div style={{ padding: '14px 16px', display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
+            <div style={{
+              width: '32px',
+              height: '32px',
+              borderRadius: '50%',
+              backgroundColor: '#064E3B',
+              border: '1.5px solid #10B981',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+              animation: 'toastPulse 2s infinite'
+            }}>
+              <CheckCircle2 style={{ width: '18px', height: '18px', color: '#34D399' }} />
+            </div>
+
+            <div style={{ flex: 1 }}>
+              <h4 style={{ fontSize: '13.5px', fontWeight: '800', margin: 0, color: '#ffffff', letterSpacing: '0.2px' }}>
+                {toastMessage.title}
+              </h4>
+              <p style={{ fontSize: '12px', margin: '4px 0 0 0', color: '#94A3B8', lineHeight: '1.45' }}>
+                {toastMessage.description}
+              </p>
+            </div>
+
+            <button
+              onClick={() => setToastMessage(null)}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: '#64748B',
+                cursor: 'pointer',
+                padding: '2px',
+                borderRadius: '4px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transition: 'color 0.15s ease'
+              }}
+              onMouseEnter={(e) => e.currentTarget.style.color = '#ffffff'}
+              onMouseLeave={(e) => e.currentTarget.style.color = '#64748B'}
+              title="Dismiss notification"
+            >
+              <X style={{ width: '16px', height: '16px' }} />
+            </button>
+          </div>
+
+          <div style={{ width: '100%', height: '3px', backgroundColor: '#1E293B', overflow: 'hidden' }}>
+            <div style={{
+              height: '100%',
+              backgroundColor: '#10B981',
+              animation: 'toastProgress 4.5s linear forwards'
+            }} />
+          </div>
+        </div>
+      )}
+
+      {/* Discussion Points Modal */}
+
+      {/* Discussion Points Modal */}
+      <DiscussionModal
+        isOpen={discussionModal.isOpen}
+        type={discussionModal.type}
+        report={discussionModal.report}
+        onClose={() => setDiscussionModal({ isOpen: false, type: 'IT', report: null })}
+        onSave={handleSaveDiscussion}
+      />
+
+      {/* Issue Indicator Register Modal */}
+      <IssueModal
+        isOpen={issueModal.isOpen}
+        report={issueModal.report}
+        onClose={() => setIssueModal({ isOpen: false, report: null })}
+        onSaveIssue={handleSaveIssues}
+      />
+
+      {/* Workflow Stages Pop-up Modal */}
+      <WorkflowModal
+        isOpen={workflowModal.isOpen}
+        title={workflowModal.title}
+        job={workflowModal.job}
+        workflows={workflowModal.workflows}
+        onClose={() => setWorkflowModal({ isOpen: false, title: '', job: null, workflows: [] })}
+      />
+
+      {/* Issue Audit Log Pop-up Modal */}
+      <IssueLogsModal
+        isOpen={historyModal.isOpen}
+        report={historyModal.report}
+        onClose={() => setHistoryModal({ isOpen: false, report: null })}
+      />
+
+    </div>
+  );
+}
